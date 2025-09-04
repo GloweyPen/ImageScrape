@@ -8,8 +8,8 @@ from urllib.parse import urljoin
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 SCRAPE_URL = os.getenv("SCRAPE_URL")
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", 5))
-DELAY_BETWEEN_BATCHES = int(os.getenv("DELAY_BETWEEN_BATCHES", 5))
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 60))  # used only between scrapes
+DELAY_BETWEEN_BATCHES = int(os.getenv("DELAY_BETWEEN_BATCHES", 30))
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 60))  # only used between scrapes
 
 # --- HEADERS TO MIMIC WINDOWS CHROME ---
 HEADERS = {
@@ -51,10 +51,6 @@ def scrape_new_images():
         for img in soup.find_all("img"):
             src = img.get("src")
             if not src:
-                continue
-            # Skip thumbnails
-            if src.split("/")[-1].lower().startswith("thumbnail_"):
-                debug(f"Skipping thumbnail image: {src}")
                 continue
 
             full_url = urljoin(SCRAPE_URL, src)
