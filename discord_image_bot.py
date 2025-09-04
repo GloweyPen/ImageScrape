@@ -2,14 +2,14 @@ import requests
 from bs4 import BeautifulSoup
 import time
 import os
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse, urlunparse, parse_qs, urlencode
 
 # --- CONFIGURATION FROM ENVIRONMENT ---
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 SCRAPE_URL = os.getenv("SCRAPE_URL")
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", 5))
-DELAY_BETWEEN_BATCHES = int(os.getenv("DELAY_BETWEEN_BATCHES", 5))
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 10))
+DELAY_BETWEEN_BATCHES = int(os.getenv("DELAY_BETWEEN_BATCHES", 30))
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 60))
 
 # --- HEADERS TO MIMIC WINDOWS CHROME ---
 HEADERS = {
@@ -33,7 +33,7 @@ HEADERS = {
 # --- STATE ---
 sent_images = set()
 image_queue = []
-page_number = 0  # page counter for pagination
+page_number = 1  # start at page 1
 
 # --- LOGGING ---
 def debug(message):
@@ -42,14 +42,14 @@ def debug(message):
 # --- SCRAPE NEW IMAGES ---
 def scrape_new_images():
     global page_number
-    # Calculate page offset
-    page_offset = page_number * 42
-    if page_offset == 0:
-        url = SCRAPE_URL
-    else:
-        url = f"{SCRAPE_URL}+&pid={page_offset}"
 
-    debug(f"Scraping page {page_number + 1}: {url}")
+    # Build URL with ?page=N
+    parsed = urlparse(SCRAPE_URL)
+    query = parse_qs(parsed.query)
+    query['page'] = [str(page_number)]
+    url = urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
+
+    debug(f"Scraping page {page_number}: {url}")
     try:
         response = requests.get(url, headers=HEADERS, timeout=10)
         debug(f"HTTP GET {url} -> Status {response.status_code}")
@@ -67,11 +67,11 @@ def scrape_new_images():
                 new_images.append(full_url)
 
         if new_images:
-            debug(f"Found {len(new_images)} new image(s) on page {page_number + 1}.")
+            debug(f"Found {len(new_images)} new image(s) on page {page_number}.")
             image_queue.extend(new_images)
-            page_number = 0  # reset pagination after finding new images
+            page_number = 1  # reset to first page after finding new images
         else:
-            debug(f"No new images found on page {page_number + 1}. Moving to next page...")
+            debug(f"No new images found on page {page_number}. Moving to next page...")
             page_number += 1
 
     except Exception as e:
