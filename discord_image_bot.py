@@ -9,9 +9,9 @@ from urllib.parse import urljoin
 # --- CONFIGURATION FROM ENVIRONMENT ---
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 SCRAPE_URL = os.getenv("SCRAPE_URL")
-BATCH_SIZE = int(os.getenv("BATCH_SIZE", 5))
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 60))
-DELAY_BETWEEN_BATCHES = int(os.getenv("DELAY_BETWEEN_BATCHES", 30))
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", 1))
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 10))
+DELAY_BETWEEN_BATCHES = int(os.getenv("DELAY_BETWEEN_BATCHES", 10))
 
 # --- HEADERS TO MIMIC WINDOWS CHROME ---
 HEADERS = {
