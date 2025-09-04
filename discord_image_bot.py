@@ -13,6 +13,25 @@ BATCH_SIZE = int(os.getenv("BATCH_SIZE", 5))
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 60))
 DELAY_BETWEEN_BATCHES = int(os.getenv("DELAY_BETWEEN_BATCHES", 30))
 
+# --- HEADERS TO MIMIC WINDOWS CHROME ---
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Referer": SCRAPE_URL,
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-User": "?1",
+    "Cache-Control": "max-age=0"
+}
+
 # --- STATE ---
 sent_images = set()  # Track already-sent images to avoid duplicates
 
@@ -25,8 +44,8 @@ def debug(message):
 def scrape_and_send():
     debug(f"Starting scrape of: {SCRAPE_URL}")
     try:
-        # Fetch HTML
-        response = requests.get(SCRAPE_URL, timeout=10)
+        # Fetch HTML with headers
+        response = requests.get(SCRAPE_URL, headers=HEADERS, timeout=10)
         debug(f"HTTP GET {SCRAPE_URL} -> Status {response.status_code}")
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
@@ -36,7 +55,6 @@ def scrape_and_send():
         for img in soup.find_all("img"):
             src = img.get("src")
             if src:
-                # Convert relative URLs to absolute
                 full_url = urljoin(SCRAPE_URL, src)
                 if full_url not in sent_images:
                     new_images.append(full_url)
@@ -51,7 +69,7 @@ def scrape_and_send():
             debug(f"Preparing to send batch of {len(batch)} image(s).")
             send_images(batch)
             sent_images.update(batch)
-            debug(f"Batch sent successfully. Sleeping {DELAY_BETWEEN_BATCHES} seconds before next batch...")
+            debug(f"Batch sent successfully. Sleeping {DELAY_BETWEEN_BATCHES}s before next batch...")
             time.sleep(DELAY_BETWEEN_BATCHES)
 
     except Exception as e:
@@ -66,7 +84,7 @@ def send_images(batch):
     for url in batch:
         try:
             debug(f"Downloading image: {url}")
-            img_response = requests.get(url, stream=True, timeout=10)
+            img_response = requests.get(url, headers=HEADERS, stream=True, timeout=10)
             debug(f"Image GET {url} -> Status {img_response.status_code}")
             img_response.raise_for_status()
             files.append((
