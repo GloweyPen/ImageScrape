@@ -9,7 +9,7 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 SCRAPE_URL = os.getenv("SCRAPE_URL")
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", 5))
 DELAY_BETWEEN_BATCHES = int(os.getenv("DELAY_BETWEEN_BATCHES", 30))
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 60))  # only used between scrapes
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 60))
 
 # --- HEADERS TO MIMIC WINDOWS CHROME ---
 HEADERS = {
@@ -33,6 +33,7 @@ HEADERS = {
 # --- STATE ---
 sent_images = set()
 image_queue = []
+page_number = 0  # page counter for pagination
 
 # --- LOGGING ---
 def debug(message):
@@ -40,10 +41,18 @@ def debug(message):
 
 # --- SCRAPE NEW IMAGES ---
 def scrape_new_images():
-    debug(f"Scraping for new images: {SCRAPE_URL}")
+    global page_number
+    # Calculate page offset
+    page_offset = page_number * 42
+    if page_offset == 0:
+        url = SCRAPE_URL
+    else:
+        url = f"{SCRAPE_URL}+&pid={page_offset}"
+
+    debug(f"Scraping page {page_number + 1}: {url}")
     try:
-        response = requests.get(SCRAPE_URL, headers=HEADERS, timeout=10)
-        debug(f"HTTP GET {SCRAPE_URL} -> Status {response.status_code}")
+        response = requests.get(url, headers=HEADERS, timeout=10)
+        debug(f"HTTP GET {url} -> Status {response.status_code}")
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 
@@ -57,8 +66,14 @@ def scrape_new_images():
             if full_url not in sent_images and full_url not in image_queue:
                 new_images.append(full_url)
 
-        debug(f"Found {len(new_images)} new image(s).")
-        image_queue.extend(new_images)
+        if new_images:
+            debug(f"Found {len(new_images)} new image(s) on page {page_number + 1}.")
+            image_queue.extend(new_images)
+            page_number = 0  # reset pagination after finding new images
+        else:
+            debug(f"No new images found on page {page_number + 1}. Moving to next page...")
+            page_number += 1
+
     except Exception as e:
         debug(f"Error scraping images: {e}")
 
@@ -89,7 +104,7 @@ def run():
         if not image_queue:
             scrape_new_images()
             if not image_queue:
-                debug(f"No new images found. Waiting {CHECK_INTERVAL}s before next scrape...")
+                debug(f"No new images in queue. Waiting {CHECK_INTERVAL}s before next scrape...")
                 time.sleep(CHECK_INTERVAL)
                 continue
 
