@@ -8,9 +8,15 @@ from discord.ext import commands, tasks
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 
-# --- CONFIGURATION FROM ENVIRONMENT ---
+# --- CONFIGURATION FROM ENVIRONMENT (CHANNEL_ID optional) ---
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-ENV_CHANNEL_ID = int(os.getenv("CHANNEL_ID", "0"))  # optional fallback
+# Parse CHANNEL_ID if present and numeric, otherwise None
+_ch = os.getenv("CHANNEL_ID")
+try:
+    ENV_CHANNEL_ID = int(_ch) if _ch and _ch.strip() != "" else None
+except Exception:
+    ENV_CHANNEL_ID = None
+
 SCRAPE_URL = os.getenv("SCRAPE_URL")
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", 5))
 DELAY_BETWEEN_BATCHES = int(os.getenv("DELAY_BETWEEN_BATCHES", 30))
@@ -31,10 +37,10 @@ HEADERS = {
 }
 
 # --- STATE ---
-sent_images = set()   # URLs already sent
-image_queue = []      # queued URLs to send
-page_number = 0       # pagination counter (0 = base)
-TARGET_CHANNEL_ID = None  # set when /cookie is invoked
+sent_images = set()
+image_queue = []
+page_number = 0
+TARGET_CHANNEL_ID = None  # set by /cookie command (or fallback to ENV_CHANNEL_ID)
 
 # --- LOGGING ---
 def debug(message):
@@ -65,7 +71,7 @@ def scrape_new_images():
         if new_images:
             debug(f"Found {len(new_images)} new images on page {page_number + 1}.")
             image_queue.extend(new_images)
-            page_number = 0  # reset to start after finding new images
+            page_number = 0
         else:
             debug(f"No new images on page {page_number + 1}. Advancing page.")
             page_number += 1
@@ -77,8 +83,10 @@ def scrape_new_images():
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- HELPER: resolve channel object from id (tries cache then fetch) ---
+# --- HELPER: resolve channel by id (cache then fetch) ---
 async def get_channel_by_id(channel_id):
+    if channel_id is None:
+        return None
     ch = bot.get_channel(channel_id)
     if ch is None:
         try:
@@ -88,23 +96,25 @@ async def get_channel_by_id(channel_id):
             return None
     return ch
 
-# --- BACKGROUND TASK: sends batches to TARGET_CHANNEL_ID ---
+# --- BACKGROUND TASK: sends batches to TARGET_CHANNEL_ID (or ENV fallback) ---
 @tasks.loop(seconds=1.0)
 async def continuous_scrape_and_send():
     global TARGET_CHANNEL_ID
-    if TARGET_CHANNEL_ID is None:
-        debug("No target channel set; waiting.")
+
+    # determine current effective target
+    effective_target = TARGET_CHANNEL_ID or ENV_CHANNEL_ID
+    if effective_target is None:
+        debug("No target channel set (TARGET_CHANNEL_ID and ENV_CHANNEL_ID are None). Waiting.")
         await asyncio.sleep(CHECK_INTERVAL)
         return
 
-    # resolve channel
-    channel = await get_channel_by_id(TARGET_CHANNEL_ID)
+    channel = await get_channel_by_id(effective_target)
     if channel is None:
-        debug(f"Target channel {TARGET_CHANNEL_ID} could not be resolved.")
+        debug(f"Target channel {effective_target} could not be resolved.")
         await asyncio.sleep(CHECK_INTERVAL)
         return
 
-    # Step 1: if queue empty -> scrape until queue fills or we've tried pages
+    # Step 1: if queue empty -> scrape until queue fills (or advance pages)
     if not image_queue:
         scrape_new_images()
         if not image_queue:
@@ -112,31 +122,26 @@ async def continuous_scrape_and_send():
             await asyncio.sleep(CHECK_INTERVAL)
             return
 
-    # Step 2: drain the queue in batches until empty
+    # Step 2: drain the queue in batches
     while image_queue:
-        # build batch
         batch = [image_queue.pop(0) for _ in range(min(BATCH_SIZE, len(image_queue)))]
         content = "\n".join(batch)
 
-        # attempt to send
         try:
-            # check send permissions quickly
             perms = channel.permissions_for(channel.guild.me) if channel.guild else None
             if perms and not perms.send_messages:
-                debug(f"Bot lacks send_messages permission in channel {channel.id}. Stopping.")
+                debug(f"Bot lacks send_messages permission in channel {channel.id}. Stopping loop.")
                 return
 
             await channel.send(content)
             sent_images.update(batch)
-            debug(f"Sent batch of {len(batch)} links to channel {channel.id}. Queue size now: {len(image_queue)}")
+            debug(f"Sent batch of {len(batch)} links to channel {channel.id}. Queue size: {len(image_queue)}")
         except Exception as e:
             debug(f"Failed to send batch to channel {channel.id}: {e}")
-            # If sending fails, push batch back onto front of queue to retry later
-            image_queue[0:0] = batch
+            image_queue[0:0] = batch  # push back for retry later
             await asyncio.sleep(CHECK_INTERVAL)
             return
 
-        # wait between batches
         debug(f"Waiting {DELAY_BETWEEN_BATCHES}s before next batch.")
         await asyncio.sleep(DELAY_BETWEEN_BATCHES)
 
@@ -148,24 +153,30 @@ async def cookie_command(interaction: discord.Interaction, channel: discord.Text
     """
     global TARGET_CHANNEL_ID
 
-    # choose channel: explicit param -> env fallback -> interaction.channel
-    target = channel or (await get_channel_by_id(ENV_CHANNEL_ID) if ENV_CHANNEL_ID else interaction.channel)
-    if target is None:
+    # Determine target in order: explicit arg -> ENV_CHANNEL_ID -> interaction.channel
+    target_channel_obj = channel
+    if target_channel_obj is None:
+        if ENV_CHANNEL_ID:
+            target_channel_obj = await get_channel_by_id(ENV_CHANNEL_ID)
+        else:
+            target_channel_obj = interaction.channel
+
+    if target_channel_obj is None:
         await interaction.response.send_message("❌ Could not determine a channel to send to.", ephemeral=True)
         return
 
-    # permissions check: attempt to send a simple ephemeral test (or check perms)
-    perms = target.permissions_for(target.guild.me) if target.guild else None
+    # permission check
+    perms = target_channel_obj.permissions_for(target_channel_obj.guild.me) if target_channel_obj.guild else None
     if perms is not None and not perms.send_messages:
-        await interaction.response.send_message(f"❌ I don't have permission to send messages in {target.mention}.", ephemeral=True)
+        await interaction.response.send_message(f"❌ I don't have permission to send messages in {target_channel_obj.mention}.", ephemeral=True)
         return
 
-    TARGET_CHANNEL_ID = target.id
+    TARGET_CHANNEL_ID = target_channel_obj.id
     if continuous_scrape_and_send.is_running():
-        await interaction.response.send_message(f"🍪 Already running; now targeting {target.mention}.", ephemeral=True)
+        await interaction.response.send_message(f"🍪 Already running; now targeting {target_channel_obj.mention}.", ephemeral=True)
     else:
         continuous_scrape_and_send.start()
-        await interaction.response.send_message(f"🍪 Cookie scraper started; sending to {target.mention}.", ephemeral=True)
+        await interaction.response.send_message(f"🍪 Cookie scraper started; sending to {target_channel_obj.mention}.", ephemeral=True)
 
 @bot.tree.command(name="stop", description="Stop the cookie scraper.")
 async def stop_command(interaction: discord.Interaction):
@@ -182,8 +193,8 @@ async def status_command(interaction: discord.Interaction):
     queue_size = len(image_queue)
     sent_count = len(sent_images)
     running = continuous_scrape_and_send.is_running()
-    tgt = TARGET_CHANNEL_ID or ENV_CHANNEL_ID or "None"
-    tgt_mention = f"<#{tgt}>" if isinstance(tgt, int) else str(tgt)
+    tgt_id = TARGET_CHANNEL_ID or ENV_CHANNEL_ID
+    tgt_mention = f"<#{tgt_id}>" if tgt_id else "None"
     await interaction.response.send_message(
         f"**Cookie Scraper Status**\n"
         f"- Running: {running}\n"
@@ -198,8 +209,6 @@ async def status_command(interaction: discord.Interaction):
 @bot.event
 async def on_ready():
     debug(f"Bot ready: {bot.user} (id: {bot.user.id})")
-    # sync global commands (may take up to 1 hour to appear globally on first publish;
-    # for immediate testing you can sync to a specific guild instead)
     try:
         await bot.tree.sync()
         debug("Slash commands synced (global).")
