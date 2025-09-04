@@ -33,6 +33,5 @@ jobs:
           BATCH_SIZE: "5"
           CHECK_INTERVAL: "60"
           DELAY_BETWEEN_BATCHES: "30"
-          # Note: CHANNEL_ID not provided here -> bot will treat it as None (optional)
         run: |
           python -u discord_image_bot.py
