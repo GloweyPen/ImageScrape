@@ -34,11 +34,10 @@ jobs:
       # Run the scraper
       - name: Run scraper
         env:
-          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}   # Discord webhook URL
-          SCRAPE_URL: ${{ secrets.SCRAPE_URL }}             # Target site to scrape
-          BATCH_SIZE: "5"                                   # Images sent per batch
-          CHECK_INTERVAL: "60"                              # Seconds between scraping
-          DELAY_BETWEEN_BATCHES: "30"                       # Delay between batches
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}    # Discord webhook URL
+          SCRAPE_URL: ${{ secrets.SCRAPE_URL }}      # Target site to scrape
+          BATCH_SIZE: "5"                            # Images sent per batch
+          CHECK_INTERVAL: "60"                       # Seconds between scraping
+          DELAY_BETWEEN_BATCHES: "30"                # Delay between batches
         run: |
           python discord_image_bot.py
-          
