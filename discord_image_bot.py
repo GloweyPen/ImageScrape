@@ -1,28 +1,26 @@
-# discord_image_bot.py
 import os
 import asyncio
 import time
 import requests
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 
-# --- CONFIGURATION FROM ENVIRONMENT (CHANNEL_ID optional) ---
+# --- CONFIGURATION ---
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-# Parse CHANNEL_ID if present and numeric, otherwise None
-_ch = os.getenv("CHANNEL_ID")
-try:
-    ENV_CHANNEL_ID = int(_ch) if _ch and _ch.strip() != "" else None
-except Exception:
-    ENV_CHANNEL_ID = None
-
 SCRAPE_URL = os.getenv("SCRAPE_URL")
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", 5))
 DELAY_BETWEEN_BATCHES = int(os.getenv("DELAY_BETWEEN_BATCHES", 30))
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 60))
 
-# --- HEADERS TO MIMIC WINDOWS CHROME ---
+# CHANNEL_ID fallback (optional, can be None)
+try:
+    ENV_CHANNEL_ID = int(os.getenv("CHANNEL_ID")) if os.getenv("CHANNEL_ID") else None
+except Exception:
+    ENV_CHANNEL_ID = None
+
+# --- HEADERS ---
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -31,31 +29,28 @@ HEADERS = {
     ),
     "Accept-Language": "en-US,en;q=0.9",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Referer": SCRAPE_URL,
     "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
 }
 
 # --- STATE ---
-sent_images = set()
-image_queue = []
-page_number = 0
-TARGET_CHANNEL_ID = None  # set by /cookie command (or fallback to ENV_CHANNEL_ID)
+active_scrapers = {}  # channel_id -> {queue, sent, page, task}
 
-# --- LOGGING ---
-def debug(message):
-    print(f"[DEBUG] {time.strftime('%Y-%m-%d %H:%M:%S')} - {message}", flush=True)
+def debug(msg):
+    print(f"[DEBUG] {time.strftime('%Y-%m-%d %H:%M:%S')} - {msg}", flush=True)
 
-# --- SCRAPER (uses +&pid=42 pagination) ---
-def scrape_new_images():
-    global page_number
+# --- SCRAPER ---
+def scrape_images_for_channel(channel_id):
+    """Scrape new images for a specific channel using its page state."""
+    state = active_scrapers[channel_id]
+    page_number = state["page"]
     offset = page_number * 42
     url = SCRAPE_URL if offset == 0 else f"{SCRAPE_URL}+&pid={offset}"
 
-    debug(f"Scraping page {page_number + 1}: {url}")
+    debug(f"[{channel_id}] Scraping page {page_number + 1}: {url}")
+
     try:
         r = requests.get(url, headers=HEADERS, timeout=10)
-        debug(f"HTTP GET {url} -> Status {r.status_code}")
+        debug(f"[{channel_id}] HTTP GET -> {r.status_code}")
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
 
@@ -65,162 +60,114 @@ def scrape_new_images():
             if not src:
                 continue
             full_url = urljoin(SCRAPE_URL, src)
-            if full_url not in sent_images and full_url not in image_queue:
+            if full_url not in state["sent"] and full_url not in state["queue"]:
                 new_images.append(full_url)
 
         if new_images:
-            debug(f"Found {len(new_images)} new images on page {page_number + 1}.")
-            image_queue.extend(new_images)
-            page_number = 0
+            debug(f"[{channel_id}] Found {len(new_images)} new images.")
+            state["queue"].extend(new_images)
+            state["page"] = 0  # reset to first page
         else:
-            debug(f"No new images on page {page_number + 1}. Advancing page.")
-            page_number += 1
-
+            state["page"] += 1  # advance to next page if none found
+            debug(f"[{channel_id}] No new images, moving to page {state['page'] + 1}.")
     except Exception as e:
-        debug(f"Error scraping images: {e}")
+        debug(f"[{channel_id}] Scraping error: {e}")
 
 # --- BOT SETUP ---
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- HELPER: resolve channel by id (cache then fetch) ---
-async def get_channel_by_id(channel_id):
-    if channel_id is None:
-        return None
-    ch = bot.get_channel(channel_id)
-    if ch is None:
-        try:
-            ch = await bot.fetch_channel(channel_id)
-        except Exception as e:
-            debug(f"Failed to fetch channel {channel_id}: {e}")
-            return None
-    return ch
+# --- SCRAPER LOOP FOR ONE CHANNEL ---
+async def scraper_loop(channel_id):
+    """Loop for one channel: scrape, queue, send."""
+    debug(f"[{channel_id}] Scraper task started.")
+    channel = await bot.fetch_channel(channel_id)
 
-# --- BACKGROUND TASK: sends batches to TARGET_CHANNEL_ID (or ENV fallback) ---
-@tasks.loop(seconds=1.0)
-async def continuous_scrape_and_send():
-    global TARGET_CHANNEL_ID
+    while channel_id in active_scrapers:
+        state = active_scrapers[channel_id]
 
-    # determine current effective target
-    effective_target = TARGET_CHANNEL_ID or ENV_CHANNEL_ID
-    if effective_target is None:
-        debug("No target channel set (TARGET_CHANNEL_ID and ENV_CHANNEL_ID are None). Waiting.")
-        await asyncio.sleep(CHECK_INTERVAL)
-        return
+        # Scrape if queue empty
+        if not state["queue"]:
+            scrape_images_for_channel(channel_id)
+            if not state["queue"]:
+                debug(f"[{channel_id}] Queue empty. Sleeping {CHECK_INTERVAL}s.")
+                await asyncio.sleep(CHECK_INTERVAL)
+                continue
 
-    channel = await get_channel_by_id(effective_target)
-    if channel is None:
-        debug(f"Target channel {effective_target} could not be resolved.")
-        await asyncio.sleep(CHECK_INTERVAL)
-        return
-
-    # Step 1: if queue empty -> scrape until queue fills (or advance pages)
-    if not image_queue:
-        scrape_new_images()
-        if not image_queue:
-            debug(f"No images found; sleeping {CHECK_INTERVAL}s before next scrape attempt.")
-            await asyncio.sleep(CHECK_INTERVAL)
-            return
-
-    # Step 2: drain the queue in batches
-    while image_queue:
-        batch = [image_queue.pop(0) for _ in range(min(BATCH_SIZE, len(image_queue)))]
+        # Send batches
+        batch = [state["queue"].pop(0) for _ in range(min(BATCH_SIZE, len(state["queue"])))]
         content = "\n".join(batch)
-
         try:
-            perms = channel.permissions_for(channel.guild.me) if channel.guild else None
-            if perms and not perms.send_messages:
-                debug(f"Bot lacks send_messages permission in channel {channel.id}. Stopping loop.")
-                return
-
             await channel.send(content)
-            sent_images.update(batch)
-            debug(f"Sent batch of {len(batch)} links to channel {channel.id}. Queue size: {len(image_queue)}")
+            state["sent"].update(batch)
+            debug(f"[{channel_id}] Sent batch of {len(batch)} links.")
         except Exception as e:
-            debug(f"Failed to send batch to channel {channel.id}: {e}")
-            image_queue[0:0] = batch  # push back for retry later
-            await asyncio.sleep(CHECK_INTERVAL)
-            return
+            debug(f"[{channel_id}] Failed to send batch: {e}")
+            # return batch to queue
+            state["queue"][0:0] = batch
 
-        debug(f"Waiting {DELAY_BETWEEN_BATCHES}s before next batch.")
         await asyncio.sleep(DELAY_BETWEEN_BATCHES)
 
-# --- SLASH COMMANDS (global) ---
-@bot.tree.command(name="cookie", description="Start scraping and sending image links to a channel.")
-async def cookie_command(interaction: discord.Interaction, channel: discord.TextChannel = None):
-    """
-    /cookie [channel] - start continuous scraping/sending to 'channel' (or current channel if omitted)
-    """
-    global TARGET_CHANNEL_ID
+    debug(f"[{channel_id}] Scraper task stopped.")
 
-    # Determine target in order: explicit arg -> ENV_CHANNEL_ID -> interaction.channel
-    target_channel_obj = channel
-    if target_channel_obj is None:
-        if ENV_CHANNEL_ID:
-            target_channel_obj = await get_channel_by_id(ENV_CHANNEL_ID)
-        else:
-            target_channel_obj = interaction.channel
+# --- COMMANDS ---
+@bot.tree.command(name="cookie", description="Start scraping and sending images to a channel.")
+async def cookie(interaction: discord.Interaction, channel: discord.TextChannel = None):
+    """Start a scraper in this or another channel."""
+    target = channel or interaction.channel
 
-    if target_channel_obj is None:
-        await interaction.response.send_message("❌ Could not determine a channel to send to.", ephemeral=True)
+    if target.id in active_scrapers:
+        await interaction.response.send_message(f"🍪 Already running in {target.mention}.", ephemeral=True)
         return
 
-    # permission check
-    perms = target_channel_obj.permissions_for(target_channel_obj.guild.me) if target_channel_obj.guild else None
-    if perms is not None and not perms.send_messages:
-        await interaction.response.send_message(f"❌ I don't have permission to send messages in {target_channel_obj.mention}.", ephemeral=True)
+    active_scrapers[target.id] = {
+        "queue": [],
+        "sent": set(),
+        "page": 0,
+        "task": asyncio.create_task(scraper_loop(target.id))
+    }
+    await interaction.response.send_message(f"🍪 Scraper started in {target.mention}.", ephemeral=True)
+
+@bot.tree.command(name="stop", description="Stop a running scraper in a channel.")
+async def stop(interaction: discord.Interaction, channel: discord.TextChannel = None):
+    """Stop a scraper in a specific channel."""
+    target = channel or interaction.channel
+
+    if target.id not in active_scrapers:
+        await interaction.response.send_message(f"No scraper running in {target.mention}.", ephemeral=True)
         return
 
-    TARGET_CHANNEL_ID = target_channel_obj.id
-    if continuous_scrape_and_send.is_running():
-        await interaction.response.send_message(f"🍪 Already running; now targeting {target_channel_obj.mention}.", ephemeral=True)
-    else:
-        continuous_scrape_and_send.start()
-        await interaction.response.send_message(f"🍪 Cookie scraper started; sending to {target_channel_obj.mention}.", ephemeral=True)
+    # Remove and cancel task
+    task = active_scrapers[target.id]["task"]
+    del active_scrapers[target.id]
+    task.cancel()
+    await interaction.response.send_message(f"🛑 Scraper stopped in {target.mention}.", ephemeral=True)
 
-@bot.tree.command(name="stop", description="Stop the cookie scraper.")
-async def stop_command(interaction: discord.Interaction):
-    global TARGET_CHANNEL_ID
-    if continuous_scrape_and_send.is_running():
-        continuous_scrape_and_send.stop()
-        TARGET_CHANNEL_ID = None
-        await interaction.response.send_message("🛑 Cookie scraper stopped.", ephemeral=True)
-    else:
-        await interaction.response.send_message("The scraper is not running.", ephemeral=True)
+@bot.tree.command(name="status", description="Show the status of all scrapers.")
+async def status(interaction: discord.Interaction):
+    if not active_scrapers:
+        await interaction.response.send_message("No active scrapers.", ephemeral=True)
+        return
 
-@bot.tree.command(name="status", description="Show cookie scraper status.")
-async def status_command(interaction: discord.Interaction):
-    queue_size = len(image_queue)
-    sent_count = len(sent_images)
-    running = continuous_scrape_and_send.is_running()
-    tgt_id = TARGET_CHANNEL_ID or ENV_CHANNEL_ID
-    tgt_mention = f"<#{tgt_id}>" if tgt_id else "None"
-    await interaction.response.send_message(
-        f"**Cookie Scraper Status**\n"
-        f"- Running: {running}\n"
-        f"- Queue size: {queue_size}\n"
-        f"- Total sent: {sent_count}\n"
-        f"- Current page: {page_number + 1}\n"
-        f"- Target channel: {tgt_mention}",
-        ephemeral=True
-    )
+    lines = []
+    for cid, state in active_scrapers.items():
+        lines.append(
+            f"- <#{cid}>: Queue={len(state['queue'])}, Sent={len(state['sent'])}, Page={state['page']+1}"
+        )
+    await interaction.response.send_message("**Active Scrapers:**\n" + "\n".join(lines), ephemeral=True)
 
 # --- EVENTS ---
 @bot.event
 async def on_ready():
     debug(f"Bot ready: {bot.user} (id: {bot.user.id})")
-    try:
-        await bot.tree.sync()
-        debug("Slash commands synced (global).")
-    except Exception as e:
-        debug(f"Error syncing commands: {e}")
+    await bot.tree.sync()
+    debug("Slash commands synced globally.")
 
 # --- RUN ---
 if __name__ == "__main__":
     if not DISCORD_TOKEN:
-        raise ValueError("DISCORD_TOKEN environment variable is not set!")
+        raise ValueError("DISCORD_TOKEN env var is required!")
     if not SCRAPE_URL:
-        raise ValueError("SCRAPE_URL environment variable is not set!")
-
+        raise ValueError("SCRAPE_URL env var is required!")
     debug("Starting bot...")
     bot.run(DISCORD_TOKEN)
