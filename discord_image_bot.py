@@ -1,7 +1,6 @@
 import requests
 from bs4 import BeautifulSoup
 import time
-import io
 import os
 import sys
 from urllib.parse import urljoin
@@ -9,9 +8,9 @@ from urllib.parse import urljoin
 # --- CONFIGURATION FROM ENVIRONMENT ---
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 SCRAPE_URL = os.getenv("SCRAPE_URL")
-BATCH_SIZE = int(os.getenv("BATCH_SIZE", 1))
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 10))
-DELAY_BETWEEN_BATCHES = int(os.getenv("DELAY_BETWEEN_BATCHES", 10))
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", 5))
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 60))
+DELAY_BETWEEN_BATCHES = int(os.getenv("DELAY_BETWEEN_BATCHES", 30))
 
 # --- HEADERS TO MIMIC WINDOWS CHROME ---
 HEADERS = {
@@ -67,11 +66,11 @@ def scrape_and_send():
         if not new_images:
             return
 
-        # Send images immediately in batches
+        # Send images in batches as links
         for i in range(0, len(new_images), BATCH_SIZE):
             batch = new_images[i:i + BATCH_SIZE]
-            debug(f"Preparing to send batch of {len(batch)} image(s).")
-            send_images(batch)
+            debug(f"Preparing to send batch of {len(batch)} links.")
+            send_links(batch)
             sent_images.update(batch)
             debug(f"Batch sent successfully. Sleeping {DELAY_BETWEEN_BATCHES}s before next batch...")
             time.sleep(DELAY_BETWEEN_BATCHES)
@@ -80,43 +79,22 @@ def scrape_and_send():
         debug(f"Error scraping or sending images: {e}")
         sys.stderr.write(f"[ERROR] {str(e)}\n")
 
-# --- DISCORD SENDER ---
-def send_images(batch):
-    debug("Starting to download images for Discord batch send...")
-    files = []
-
-    # Download all images first
-    for url in batch:
-        try:
-            debug(f"Downloading image: {url}")
-            img_response = requests.get(url, headers=HEADERS, stream=True, timeout=10)
-            debug(f"Image GET {url} -> Status {img_response.status_code}")
-            img_response.raise_for_status()
-            files.append((
-                "file",
-                (url.split("/")[-1] or "image.png", io.BytesIO(img_response.content), "image/png")
-            ))
-        except Exception as e:
-            debug(f"Failed to download image {url}: {e}")
-
-    # Send all downloaded images at once
-    if files:
-        try:
-            debug(f"Sending {len(files)} file(s) to Discord webhook: {WEBHOOK_URL}")
-            response = requests.post(
-                WEBHOOK_URL,
-                files=files,
-                data={"content": f"New batch of {len(files)} image(s)!"}
-            )
-            debug(f"Discord POST response status: {response.status_code}")
-            if response.status_code == 204:
-                debug("Discord acknowledged the upload successfully.")
-            else:
-                debug(f"Discord responded with error: {response.status_code} {response.text}")
-        except Exception as e:
-            debug(f"Webhook send error: {e}")
-    else:
-        debug("No images downloaded successfully. Skipping Discord send.")
+# --- DISCORD SENDER (Links Only) ---
+def send_links(batch):
+    content = "\n".join(batch)
+    try:
+        debug(f"Sending batch of {len(batch)} links to Discord webhook: {WEBHOOK_URL}")
+        response = requests.post(
+            WEBHOOK_URL,
+            data={"content": content}
+        )
+        debug(f"Discord POST response status: {response.status_code}")
+        if response.status_code == 204:
+            debug("Discord acknowledged the upload successfully.")
+        else:
+            debug(f"Discord responded with error: {response.status_code} {response.text}")
+    except Exception as e:
+        debug(f"Webhook send error: {e}")
 
 # --- MAIN LOOP ---
 def run():
