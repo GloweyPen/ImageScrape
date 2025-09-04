@@ -66,7 +66,7 @@ def scrape_and_send():
         if not new_images:
             return
 
-        # Send images in batches as links
+        # Send URLs in batches
         for i in range(0, len(new_images), BATCH_SIZE):
             batch = new_images[i:i + BATCH_SIZE]
             debug(f"Preparing to send batch of {len(batch)} links.")
