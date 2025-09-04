@@ -6,7 +6,7 @@ import os
 
 # --- CONFIGURATION FROM ENVIRONMENT ---
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Discord webhook URL from GitHub Actions secret
-SCRAPE_URL = os.getenv("SCRAPE_URL", "https://example.com/gallery")  # Target URL can also be set via env var
+SCRAPE_URL = os.getenv("SCRAPE_URL")  # Target URL can also be set via env var
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", 5))
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 60))
 DELAY_BETWEEN_BATCHES = int(os.getenv("DELAY_BETWEEN_BATCHES", 30))
