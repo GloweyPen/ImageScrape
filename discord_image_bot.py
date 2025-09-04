@@ -37,14 +37,13 @@ sent_images = set()  # Track already-sent images to avoid duplicates
 
 # --- LOGGING HELPER ---
 def debug(message):
-    """Print debug messages with timestamps."""
     print(f"[DEBUG] {time.strftime('%Y-%m-%d %H:%M:%S')} - {message}", flush=True)
 
 # --- SCRAPE AND SEND FUNCTION ---
 def scrape_and_send():
     debug(f"Starting scrape of: {SCRAPE_URL}")
     try:
-        # Fetch HTML with headers
+        # Fetch HTML
         response = requests.get(SCRAPE_URL, headers=HEADERS, timeout=10)
         debug(f"HTTP GET {SCRAPE_URL} -> Status {response.status_code}")
         response.raise_for_status()
@@ -55,15 +54,20 @@ def scrape_and_send():
         for img in soup.find_all("img"):
             src = img.get("src")
             if src:
+                # Skip thumbnails
+                if src.split("/")[-1].lower().startswith("thumbnail_"):
+                    debug(f"Skipping thumbnail image: {src}")
+                    continue
+
                 full_url = urljoin(SCRAPE_URL, src)
                 if full_url not in sent_images:
                     new_images.append(full_url)
 
-        debug(f"Found {len(new_images)} new image(s).")
+        debug(f"Found {len(new_images)} new image(s) after skipping thumbnails.")
         if not new_images:
             return
 
-        # Send images immediately as they are discovered
+        # Send images immediately in batches
         for i in range(0, len(new_images), BATCH_SIZE):
             batch = new_images[i:i + BATCH_SIZE]
             debug(f"Preparing to send batch of {len(batch)} image(s).")
@@ -81,6 +85,7 @@ def send_images(batch):
     debug("Starting to download images for Discord batch send...")
     files = []
 
+    # Download all images first
     for url in batch:
         try:
             debug(f"Downloading image: {url}")
@@ -94,24 +99,24 @@ def send_images(batch):
         except Exception as e:
             debug(f"Failed to download image {url}: {e}")
 
-    if not files:
+    # Send all downloaded images at once
+    if files:
+        try:
+            debug(f"Sending {len(files)} file(s) to Discord webhook: {WEBHOOK_URL}")
+            response = requests.post(
+                WEBHOOK_URL,
+                files=files,
+                data={"content": f"New batch of {len(files)} image(s)!"}
+            )
+            debug(f"Discord POST response status: {response.status_code}")
+            if response.status_code == 204:
+                debug("Discord acknowledged the upload successfully.")
+            else:
+                debug(f"Discord responded with error: {response.status_code} {response.text}")
+        except Exception as e:
+            debug(f"Webhook send error: {e}")
+    else:
         debug("No images downloaded successfully. Skipping Discord send.")
-        return
-
-    try:
-        debug(f"Sending {len(files)} file(s) to Discord webhook: {WEBHOOK_URL}")
-        response = requests.post(
-            WEBHOOK_URL,
-            files=files,
-            data={"content": f"New batch of {len(files)} image(s)!"}
-        )
-        debug(f"Discord POST response status: {response.status_code}")
-        if response.status_code == 204:
-            debug("Discord acknowledged the upload successfully.")
-        else:
-            debug(f"Discord responded with error: {response.status_code} {response.text}")
-    except Exception as e:
-        debug(f"Webhook send error: {e}")
 
 # --- MAIN LOOP ---
 def run():
