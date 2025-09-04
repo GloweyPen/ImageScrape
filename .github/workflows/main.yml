@@ -1,0 +1,44 @@
+name: Run Discord Image Scraper
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'  # Run every 5 minutes
+  workflow_dispatch:        # Allow manual triggering
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    # Ensure only one job runs at a time
+    concurrency:
+      group: discord-image-scraper
+      cancel-in-progress: false
+
+    steps:
+      # Checkout the repository
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # Set up Python environment
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      # Install dependencies
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Run the scraper
+      - name: Run scraper
+        env:
+          WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}   # Discord webhook URL
+          SCRAPE_URL: ${{ secrets.SCRAPE_URL }}             # Target site to scrape
+          BATCH_SIZE: "5"                                   # Images sent per batch
+          CHECK_INTERVAL: "60"                              # Seconds between scraping
+          DELAY_BETWEEN_BATCHES: "30"                       # Delay between batches
+        run: |
+          python discord_image_bot.py
+          
