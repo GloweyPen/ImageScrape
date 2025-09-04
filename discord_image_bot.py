@@ -8,8 +8,8 @@ from urllib.parse import urljoin
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 SCRAPE_URL = os.getenv("SCRAPE_URL")
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", 5))
-DELAY_BETWEEN_BATCHES = int(os.getenv("DELAY_BETWEEN_BATCHES", 30))
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 60))
+DELAY_BETWEEN_BATCHES = int(os.getenv("DELAY_BETWEEN_BATCHES", 10))
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 20))
 
 # --- HEADERS TO MIMIC WINDOWS CHROME ---
 HEADERS = {
